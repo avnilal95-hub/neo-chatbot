@@ -1,488 +1,347 @@
 
-"use strict";
-
-/* =================================
-   NEO AI CHAT - MAIN JAVASCRIPT
-================================= */
-
 const CONFIG = {
-    apiEndpoint: "/api/chat",
-    maxHistory: 16,
-    requestTimeout: 120000,
-    storageKey: "neo_chat_history",
-    activeChatKey: "neo_active_chat"
+  apiEndpoint: "/api/chat",
+  healthEndpoint: "/api/health",
+  maxHistory: 16,
+  requestTimeout: 120000
 };
-
-/* =================================
-   DOM ELEMENTS
-================================= */
 
 const elements = {
-    sidebar: document.getElementById("sidebar"),
-    newChat: document.getElementById("newChat"),
-    chatHistory: document.getElementById("chatHistory"),
-    settingsButton: document.getElementById("settingsButton"),
-    menuButton: document.getElementById("menuButton"),
-    connectionStatus: document.getElementById("connectionStatus"),
-    conversation: document.getElementById("conversation"),
-    welcomeScreen: document.getElementById("welcomeScreen"),
-    messages: document.getElementById("messages"),
-    chatForm: document.getElementById("chatForm"),
-    messageInput: document.getElementById("messageInput"),
-    sendButton: document.getElementById("sendButton")
+  sidebar: document.getElementById("sidebar"),
+  newChat: document.getElementById("newChat"),
+  chatHistory: document.getElementById("chatHistory"),
+  settingsButton: document.getElementById("settingsButton"),
+  menuButton: document.getElementById("menuButton"),
+  connectionStatus: document.getElementById("connectionStatus"),
+  conversation: document.getElementById("conversation"),
+  welcomeScreen: document.getElementById("welcomeScreen"),
+  messages: document.getElementById("messages"),
+  chatForm: document.getElementById("chatForm"),
+  messageInput: document.getElementById("messageInput"),
+  sendButton: document.getElementById("sendButton")
 };
 
-/* =================================
-   APPLICATION STATE
-================================= */
-
-let chats = loadChats();
-let activeChatId = localStorage.getItem(CONFIG.activeChatKey);
+let chats = JSON.parse(localStorage.getItem("neo_chats") || "[]");
+let currentChatId = null;
 let isGenerating = false;
-let abortController = null;
-
-/* =================================
-   STORAGE
-================================= */
-
-function loadChats() {
-    try {
-        const saved = JSON.parse(
-            localStorage.getItem(CONFIG.storageKey) || "[]"
-        );
-
-        return Array.isArray(saved) ? saved : [];
-    } catch {
-        return [];
-    }
-}
 
 function saveChats() {
-    try {
-        localStorage.setItem(
-            CONFIG.storageKey,
-            JSON.stringify(chats)
-        );
-    } catch (error) {
-        console.error("Unable to save chats:", error);
-    }
+  localStorage.setItem("neo_chats", JSON.stringify(chats));
 }
 
-function getActiveChat() {
-    return chats.find(chat => chat.id === activeChatId);
+function createId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+function getNeoPassword() {
+  let password = sessionStorage.getItem("neo_access_password");
+
+  while (!password) {
+    password = prompt("Enter your NEO access password:");
+
+    if (password === null) return null;
+
+    password = password.trim();
+
+    if (password) {
+      sessionStorage.setItem("neo_access_password", password);
+    }
+  }
+
+  return password;
+}
+
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;"
+  })[char]);
+}
+
+function formatMessage(text) {
+  return escapeHTML(text).replace(/\n/g, "<br>");
+}
+
+function getCurrentChat() {
+  return chats.find(chat => chat.id === currentChatId);
 }
 
 function createChat() {
-    const chat = {
-        id: crypto.randomUUID(),
-        title: "New conversation",
-        messages: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-    };
+  const chat = {
+    id: createId(),
+    title: "New chat",
+    messages: [],
+    updatedAt: Date.now()
+  };
 
-    chats.unshift(chat);
-    activeChatId = chat.id;
+  chats.unshift(chat);
+  currentChatId = chat.id;
 
-    localStorage.setItem(CONFIG.activeChatKey, activeChatId);
-
-    saveChats();
-    renderChatHistory();
-    renderMessages();
-
-    elements.messageInput.focus();
-
-    return chat;
+  saveChats();
+  renderChat();
+  renderHistory();
 }
 
-/* =================================
-   CHAT HISTORY SIDEBAR
-================================= */
+function renderHistory() {
+  if (!elements.chatHistory) return;
 
-function renderChatHistory() {
-    if (!elements.chatHistory) return;
+  elements.chatHistory.innerHTML = "";
 
-    elements.chatHistory.replaceChildren();
+  chats.forEach(chat => {
+    const item = document.createElement("button");
 
-    chats.forEach(chat => {
-        const button = document.createElement("button");
+    item.className = "history-item";
+    item.textContent = chat.title;
+    item.type = "button";
 
-        button.type = "button";
-        button.className = "history-item";
-        button.textContent = chat.title;
-
-        button.style.cssText = `
-            width:100%;
-            display:block;
-            text-align:left;
-            padding:11px 12px;
-            margin-bottom:5px;
-            border-radius:10px;
-            color:#c9c1dc;
-            background:${chat.id === activeChatId ? "#211a35" : "transparent"};
-            border:none;
-            cursor:pointer;
-            overflow:hidden;
-            text-overflow:ellipsis;
-            white-space:nowrap;
-            font-size:13px;
-        `;
-
-        button.addEventListener("click", () => {
-            if (isGenerating) return;
-
-            activeChatId = chat.id;
-
-            localStorage.setItem(
-                CONFIG.activeChatKey,
-                activeChatId
-            );
-
-            renderChatHistory();
-            renderMessages();
-
-            if (window.innerWidth <= 700) {
-                elements.sidebar?.classList.remove("open");
-            }
-        });
-
-        elements.chatHistory.appendChild(button);
-    });
-}
-
-/* =================================
-   MESSAGE RENDERING
-================================= */
-
-function renderMessages() {
-    const chat = getActiveChat();
-
-    elements.messages.replaceChildren();
-
-    if (!chat || chat.messages.length === 0) {
-        elements.welcomeScreen.hidden = false;
-        return;
+    if (chat.id === currentChatId) {
+      item.classList.add("active");
     }
 
-    elements.welcomeScreen.hidden = true;
+    item.addEventListener("click", () => {
+      currentChatId = chat.id;
+      renderChat();
+      renderHistory();
 
-    chat.messages.forEach(message => {
-        addMessageToScreen(
-            message.role,
-            message.content
-        );
+      elements.sidebar?.classList.remove("open");
     });
 
-    scrollToBottom();
+    elements.chatHistory.appendChild(item);
+  });
 }
 
-function addMessageToScreen(role, content) {
-    const wrapper = document.createElement("div");
+function renderMessage(message) {
+  const wrapper = document.createElement("div");
+  wrapper.className = `message ${message.role}`;
 
-    wrapper.className = `message ${role === "user" ? "user" : "assistant"}`;
+  const avatar = document.createElement("div");
+  avatar.className = "message-avatar";
+  avatar.textContent = message.role === "user" ? "You" : "N";
 
-    const avatar = document.createElement("div");
-    avatar.className = "message-avatar";
-    avatar.textContent = role === "user" ? "U" : "N";
+  const content = document.createElement("div");
+  content.className = "message-content";
+  content.innerHTML = formatMessage(message.content);
 
-    const messageContent = document.createElement("div");
-    messageContent.className = "message-content";
-    messageContent.textContent = content;
+  wrapper.appendChild(avatar);
+  wrapper.appendChild(content);
 
-    wrapper.append(avatar, messageContent);
-    elements.messages.appendChild(wrapper);
-
-    return messageContent;
+  elements.messages.appendChild(wrapper);
 }
 
-function scrollToBottom() {
-    elements.conversation.scrollTo({
-        top: elements.conversation.scrollHeight,
-        behavior: "smooth"
-    });
+function renderChat() {
+  const chat = getCurrentChat();
+
+  elements.messages.innerHTML = "";
+
+  if (!chat || chat.messages.length === 0) {
+    elements.welcomeScreen.style.display = "flex";
+    elements.conversation.style.display = "none";
+    return;
+  }
+
+  elements.welcomeScreen.style.display = "none";
+  elements.conversation.style.display = "block";
+
+  chat.messages.forEach(renderMessage);
 }
 
-/* =================================
-   CONNECTION STATUS
-================================= */
+function setLoading(loading) {
+  isGenerating = loading;
 
-function setConnectionStatus(status) {
-    const labels = {
-        online: "Connected",
-        offline: "Offline",
-        loading: "Connecting...",
-        busy: "NEO is thinking..."
-    };
+  if (elements.sendButton) {
+    elements.sendButton.disabled = loading;
+  }
 
-    if (elements.connectionStatus) {
-        elements.connectionStatus.textContent =
-            labels[status] || "Unknown";
+  if (elements.messageInput) {
+    elements.messageInput.disabled = loading;
+  }
 
-        elements.connectionStatus.style.background =
-            status === "online" ? "#48d69b" :
-            status === "offline" ? "#e05b72" :
-            "#e5ae50";
-    }
+  if (elements.connectionStatus) {
+    elements.connectionStatus.textContent = loading
+      ? "NEO is thinking..."
+      : "Ready";
+  }
+}
+
+function showTyping() {
+  const typing = document.createElement("div");
+
+  typing.id = "neoTyping";
+  typing.className = "message assistant";
+  typing.innerHTML = `
+    <div class="message-avatar">N</div>
+    <div class="message-content">NEO is thinking...</div>
+  `;
+
+  elements.messages.appendChild(typing);
 }
 
 async function checkConnection() {
-    try {
-        const response = await fetch("/api/health", {
-            cache: "no-store"
-        });
+  try {
+    const response = await fetch(CONFIG.healthEndpoint);
 
-        setConnectionStatus(
-            response.ok ? "online" : "offline"
-        );
-    } catch {
-        setConnectionStatus("offline");
+    if (!response.ok) throw new Error("API unavailable");
+
+    const data = await response.json();
+
+    if (elements.connectionStatus) {
+      elements.connectionStatus.textContent =
+        data.status === "ok" ? "API online" : "API unavailable";
     }
-}
-
-/* =================================
-   INPUT MANAGEMENT
-================================= */
-
-function resizeInput() {
-    elements.messageInput.style.height = "auto";
-
-    elements.messageInput.style.height =
-        Math.min(elements.messageInput.scrollHeight, 150) + "px";
-}
-
-elements.messageInput.addEventListener("input", resizeInput);
-
-elements.messageInput.addEventListener("keydown", event => {
-    if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-
-        if (!isGenerating) {
-            elements.chatForm.requestSubmit();
-        }
+  } catch {
+    if (elements.connectionStatus) {
+      elements.connectionStatus.textContent = "API offline";
     }
-});
-
-/* =================================
-   SEND MESSAGE
-================================= */
+  }
+}
 
 async function sendMessage(text) {
-    text = text.trim();
+  if (isGenerating || !text.trim()) return;
 
-    if (!text || isGenerating) return;
+  const password = getNeoPassword();
 
-    let chat = getActiveChat();
+  if (!password) return;
 
-    if (!chat) {
-        chat = createChat();
+  if (!currentChatId || !getCurrentChat()) {
+    createChat();
+  }
+
+  const chat = getCurrentChat();
+
+  chat.messages.push({
+    role: "user",
+    content: text.trim()
+  });
+
+  if (chat.messages.length === 1) {
+    chat.title = text.trim().slice(0, 35);
+  }
+
+  saveChats();
+  renderChat();
+  renderHistory();
+
+  elements.welcomeScreen.style.display = "none";
+  elements.conversation.style.display = "block";
+
+  setLoading(true);
+  showTyping();
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    CONFIG.requestTimeout
+  );
+
+  try {
+    const response = await fetch(CONFIG.apiEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-neo-access": password
+      },
+      body: JSON.stringify({
+        messages: chat.messages
+          .slice(-CONFIG.maxHistory)
+          .map(message => ({
+            role: message.role,
+            content: message.content
+          }))
+      }),
+      signal: controller.signal
+    });
+
+    if (response.status === 401) {
+      sessionStorage.removeItem("neo_access_password");
+      throw new Error("Incorrect password. Refresh and enter it again.");
+    }
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || "NEO server error.");
+    }
+
+    const data = await response.json();
+
+    const reply =
+      data.reply ||
+      data.choices?.[0]?.message?.content;
+
+    if (!reply) {
+      throw new Error("NEO returned an empty response.");
     }
 
     chat.messages.push({
-        role: "user",
-        content: text
+      role: "assistant",
+      content: reply
     });
 
-    if (chat.messages.length === 1) {
-        chat.title = text.slice(0, 35) +
-            (text.length > 35 ? "..." : "");
-    }
-
     chat.updatedAt = Date.now();
+    saveChats();
+
+  } catch (error) {
+    const message = error.name === "AbortError"
+      ? "Request timed out. Check your phone's model server and tunnel."
+      : error.message;
+
+    chat.messages.push({
+      role: "assistant",
+      content: "Error: " + message
+    });
 
     saveChats();
 
-    elements.welcomeScreen.hidden = true;
+  } finally {
+    clearTimeout(timeout);
+    setLoading(false);
+    renderChat();
+    renderHistory();
 
-    addMessageToScreen("user", text);
-
-    const assistantBubble = addMessageToScreen(
-        "assistant",
-        "NEO is thinking..."
-    );
-
-    elements.messageInput.value = "";
-    resizeInput();
-
-    setGeneratingState(true);
-
-    const history = chat.messages.slice(-CONFIG.maxHistory);
-
-    abortController = new AbortController();
-
-    const timeout = setTimeout(
-        () => abortController.abort(),
-        CONFIG.requestTimeout
-    );
-
-    try {
-        setConnectionStatus("busy");
-
-        const response = await fetch(CONFIG.apiEndpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                messages: history
-            }),
-            signal: abortController.signal
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-
-            throw new Error(
-                errorData.error || `Server error: ${response.status}`
-            );
-        }
-
-        const data = await response.json();
-
-        const reply =
-            data.reply ||
-            data.choices?.[0]?.message?.content;
-
-        if (typeof reply !== "string" || !reply.trim()) {
-            throw new Error("NEO returned an empty response.");
-        }
-
-        assistantBubble.textContent = reply;
-
-        chat.messages.push({
-            role: "assistant",
-            content: reply
-        });
-
-        chat.updatedAt = Date.now();
-
-        saveChats();
-        renderChatHistory();
-
-        setConnectionStatus("online");
-
-    } catch (error) {
-        console.error("NEO error:", error);
-
-        const errorMessage =
-            error.name === "AbortError"
-                ? "Request timed out. Please try again."
-                : error.message || "Something went wrong.";
-
-        assistantBubble.textContent =
-            "⚠️ " + errorMessage;
-
-        setConnectionStatus("offline");
-
-    } finally {
-        clearTimeout(timeout);
-        abortController = null;
-
-        setGeneratingState(false);
-        scrollToBottom();
-        elements.messageInput.focus();
+    if (elements.messageInput) {
+      elements.messageInput.disabled = false;
+      elements.messageInput.focus();
     }
+  }
 }
 
-/* =================================
-   GENERATION STATE
-================================= */
+elements.chatForm?.addEventListener("submit", event => {
+  event.preventDefault();
 
-function setGeneratingState(state) {
-    isGenerating = state;
+  const text = elements.messageInput.value.trim();
 
-    elements.sendButton.disabled = state;
-    elements.messageInput.disabled = state;
+  if (!text || isGenerating) return;
 
-    elements.sendButton.textContent = state ? "…" : "↑";
-
-    if (!state) {
-        setConnectionStatus("online");
-    }
-}
-
-/* =================================
-   FORM SUBMISSION
-================================= */
-
-elements.chatForm.addEventListener("submit", event => {
-    event.preventDefault();
-
-    sendMessage(elements.messageInput.value);
+  elements.messageInput.value = "";
+  sendMessage(text);
 });
 
-/* =================================
-   NEW CHAT
-================================= */
-
-elements.newChat.addEventListener("click", () => {
-    if (isGenerating) {
-        abortController?.abort();
-    }
-
-    createChat();
-
-    if (window.innerWidth <= 700) {
-        elements.sidebar?.classList.remove("open");
-    }
-});
-
-/* =================================
-   SUGGESTION CARDS
-================================= */
-
-document.querySelectorAll(".suggestion-card").forEach(card => {
-    card.addEventListener("click", () => {
-        const prompt = card.dataset.prompt;
-
-        if (!prompt || isGenerating) return;
-
-        sendMessage(prompt);
-    });
-});
-
-/* =================================
-   MOBILE SIDEBAR
-================================= */
+elements.newChat?.addEventListener("click", createChat);
 
 elements.menuButton?.addEventListener("click", () => {
-    elements.sidebar?.classList.toggle("open");
+  elements.sidebar?.classList.toggle("open");
 });
-
-/* =================================
-   SETTINGS
-================================= */
 
 elements.settingsButton?.addEventListener("click", () => {
-    alert(
-        "NEO Settings\n\n" +
-        "Model: Llama 3.2 1B\n" +
-        "Device: Redmi 13C 5G\n" +
-        "Storage: Browser local storage"
-    );
+  alert("NEO AI Chat\nPowered by Llama 3.2 1B");
 });
 
-/* =================================
-   INITIALIZATION
-================================= */
+document.querySelectorAll(".suggestion-card").forEach(card => {
+  card.addEventListener("click", () => {
+    const prompt = card.dataset.prompt;
 
-function initializeNEO() {
-    if (!chats.length) {
-        createChat();
-    } else if (!getActiveChat()) {
-        activeChatId = chats[0].id;
+    if (prompt) sendMessage(prompt);
+  });
+});
 
-        localStorage.setItem(
-            CONFIG.activeChatKey,
-            activeChatId
-        );
-    }
-
-    renderChatHistory();
-    renderMessages();
-
-    checkConnection();
+if (chats.length > 0) {
+  currentChatId = chats[0].id;
+} else {
+  createChat();
 }
 
-initializeNEO();
-
-console.log("NEO AI Chat initialized.");
+renderChat();
+renderHistory();
+checkConnection();
